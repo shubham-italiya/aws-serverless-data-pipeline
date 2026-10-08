@@ -1,0 +1,2 @@
+# Installed into the Lambda package by `sam build` (boto3 is already in the Lambda runtime).
+pandas>=2.0

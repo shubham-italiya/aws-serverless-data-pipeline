@@ -1,0 +1,135 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Daily transaction files land in S3, a Lambda checks their quality (bad batches are quarantined and
+  trigger an SNS alert), and a scheduled Glue job writes accepted batches to a Parquet data lake.
+
+Parameters:
+  AlertEmail:
+    Type: String
+    Description: Email address that receives data-quality alerts (confirm the subscription email).
+  ArtifactBucket:
+    Type: String
+    Description: Existing bucket holding glue/run_curate.py and the txpipe wheel (see README).
+
+Resources:
+  DataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-data-${AWS::AccountId}"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireQuarantine
+            Status: Enabled
+            Prefix: quarantine/
+            ExpirationInDays: 90
+
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Protocol: email
+          Endpoint: !Ref AlertEmail
+
+  ValidateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../src
+      Handler: txpipe.validate_handler.handler
+      Runtime: python3.12
+      MemorySize: 1024
+      Timeout: 120
+      Environment:
+        Variables:
+          ALERT_TOPIC_ARN: !Ref AlertTopic
+      Policies:
+        # Bucket name built from the stack name, not !Ref, to avoid a circular dependency with the S3 event.
+        - S3CrudPolicy:
+            BucketName: !Sub "${AWS::StackName}-data-${AWS::AccountId}"
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt AlertTopic.TopicName
+      Events:
+        RawFileUploaded:
+          Type: S3
+          Properties:
+            Bucket: !Ref DataBucket
+            Events: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: raw/
+                  - Name: suffix
+                    Value: .csv
+
+  GlueRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: glue.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+      Policies:
+        - PolicyName: DataLakeAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [s3:GetObject, s3:PutObject]
+                Resource: !Sub "arn:aws:s3:::${DataBucket}/*"
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt DataBucket.Arn
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "arn:aws:s3:::${ArtifactBucket}/glue/*"
+
+  CurateJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Role: !GetAtt GlueRole.Arn
+      GlueVersion: "3.0"
+      MaxCapacity: 0.0625
+      Command:
+        Name: pythonshell
+        PythonVersion: "3.9"
+        ScriptLocation: !Sub "s3://${ArtifactBucket}/glue/run_curate.py"
+      DefaultArguments:
+        "--DATA_BUCKET": !Ref DataBucket
+        "--extra-py-files": !Sub "s3://${ArtifactBucket}/glue/txpipe-1.0.0-py3-none-any.whl"
+        "library-set": analytics
+
+  CurateDaily:
+    Type: AWS::Glue::Trigger
+    Properties:
+      Type: SCHEDULED
+      Schedule: cron(0 6 * * ? *)
+      StartOnCreation: true
+      Actions:
+        - JobName: !Ref CurateJob
+
+Outputs:
+  DataBucketName:
+    Value: !Ref DataBucket
+  AlertTopicArn:
+    Value: !Ref AlertTopic
+  ValidateFunctionName:
+    Value: !Ref ValidateFunction
+  CurateJobName:
+    Value: !Ref CurateJob

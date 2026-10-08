@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "txpipe"
+version = "1.0.0"
+description = "Serverless pipeline for daily transaction files: data-quality checks, quarantine and alerts, Parquet data lake."
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Shubham S. Italiya" }]
+requires-python = ">=3.9"   # AWS Glue Python shell jobs run Python 3.9
+dependencies = ["pandas>=1.5", "numpy>=1.24", "pyarrow>=12", "boto3>=1.28"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5", "moto[s3,sns,sqs]>=5.0", "cfn-lint>=1.0", "openpyxl>=3.1"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["UP007", "UP045"]  # keep "X | None" style inside `from __future__ import annotations` modules

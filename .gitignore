@@ -1,0 +1,11 @@
+data/
+sample_data/
+dist/
+build/
+.aws-sam/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+.DS_Store
